@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-chatluna-mention",
-  "description": "注册一个chatluna渲染模板，以支持模型在回复中渲染@消息",
-  "version": "0.0.1",
+  "description": "让 ChatLuna 的回复里能真正 @ 人：按群成员名称解析，保留 markdown 排版，不泄露 QQ 号（仅 onebot）",
+  "version": "1.0.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [
@@ -9,14 +9,33 @@
     "dist"
   ],
   "license": "MIT",
-  "scripts": {},
   "keywords": [
     "chatbot",
     "koishi",
-    "plugin"
+    "plugin",
+    "chatluna",
+    "mention",
+    "at",
+    "onebot",
+    "napcat"
   ],
-  "devDependencies": {},
+  "scripts": {
+    "build": "node ../../node_modules/typescript/bin/tsc -b tsconfig.json --force && node ../../node_modules/esbuild/bin/esbuild src/index.ts --bundle --platform=node --format=cjs --target=es2022 --packages=external --outfile=lib/index.js",
+    "test": "node ../../node_modules/esbuild/bin/esbuild test/mention.test.ts --bundle --platform=node --format=cjs --packages=external --outfile=test/.build/mention.test.cjs && node test/.build/mention.test.cjs"
+  },
   "peerDependencies": {
-    "koishi": "^4.18.7"
+    "koishi": "^4.18.7",
+    "koishi-plugin-chatluna": "^1.4.0"
+  },
+  "koishi": {
+    "description": {
+      "zh": "让 ChatLuna 的回复里能真正 @ 人：按群成员名称解析，保留 markdown 排版，不泄露 QQ 号。仅支持 onebot（NapCat）。",
+      "en": "Render real @mentions in ChatLuna replies by member name, preserving markdown and never exposing QQ numbers. onebot only."
+    },
+    "service": {
+      "required": [
+        "chatluna"
+      ]
+    }
   }
 }
