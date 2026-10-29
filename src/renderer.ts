@@ -8,6 +8,7 @@ import {
 import { transformMessageContentToElements } from 'koishi-plugin-chatluna/utils/string'
 import { transformToMarkdown } from 'koishi-plugin-chatluna/utils/koishi'
 import type { MentionBudget, MentionResolver } from './resolver'
+import { groupElements } from './split'
 
 /** 渲染器类型名：必须与 chatluna 配置里的 outputMode 一致 */
 export const RENDER_TYPE = 'text-at'
@@ -39,14 +40,15 @@ export class MentionRenderer extends Renderer {
   }
 
   async render(message: Message, options: RenderOptions): Promise<RenderMessage> {
+    const split = options.split ?? 'none'
+
     try {
-      const elements: h[] = []
-      const budget: MentionBudget = { count: 0 }
+      const groups: h[][] = []
 
       for (const part of transformMessageContentToElements(message.content)) {
         if (part.type !== 'text') {
           // 图片 / 文件 / 音频等非文本段原样透传，绝不丢弃
-          elements.push(part)
+          groups.push([part])
           continue
         }
 
@@ -54,7 +56,32 @@ export class MentionRenderer extends Renderer {
           String(part.attrs.content ?? ''),
           options.session?.platform ?? 'sandbox',
         )
-        elements.push(...(await this.resolver.rewrite(markdown, options.session, budget)))
+
+        // 与 ChatLuna 内置 TextRenderer 的约定一致：分段时每段包成一个
+        // h('message') 元素，onebot 适配器会在每个 message 元素处 flush 成独立消息。
+        groups.push(...groupElements(markdown, split))
+      }
+
+      const elements: h[] = []
+      // 不分段时与旧行为保持一致：整条回复共享同一个 @ 预算
+      const sharedBudget: MentionBudget = { count: 0 }
+
+      for (const group of groups) {
+        // 分段后每个分组就是一条对外消息，@ 预算按消息重新计数
+        const budget = split === 'none' ? sharedBudget : { count: 0 }
+        const rewritten = await this.resolver.rewrite(
+          group,
+          options.session,
+          budget,
+        )
+
+        if (rewritten.length === 0) continue
+
+        if (split === 'none') {
+          elements.push(...rewritten)
+        } else {
+          elements.push(h('message', ...rewritten))
+        }
       }
 
       return { element: elements }

@@ -1,7 +1,7 @@
 {
   "name": "koishi-plugin-chatluna-mention",
   "description": "让 ChatLuna 的回复里能真正 @ 人：按群成员名称解析，保留 markdown 排版，不泄露 QQ 号（仅 onebot）",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "main": "lib/index.js",
   "typings": "lib/index.d.ts",
   "files": [

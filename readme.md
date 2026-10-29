@@ -15,6 +15,8 @@
 - 名字 → QQ 号：群名片 + 昵称 + **去称谓变体**（名片是 `小明さん` 时，写 `@小明` 也能命中）。
 - 重名默认**不转**（宁可 @ 不到，也不 @ 错人）；可用 `fixedMentions` 固定要害身份。
 - 保留解析 `<at id="…"/>` 的能力：**不在本群就整段丢弃**，绝不把 QQ 号回显成文本。
+- 支持 ChatLuna 的 `splitMessage`：`paragraph` 按空行、`punctuation` 按句读拆成多条 `h('message')`，
+  每段独立解析 @；`maxPerMessage` 按每条对外消息计数。
 
 ## 使用
 
@@ -73,7 +75,8 @@ fixedMentions:
 
 - 只支持 onebot；官方 QQ 机器人与其它适配器不在支持范围。
 - 流式固定为 buffer（整条生成完再发），避免 `@小明` 被切成两半。
-- `splitMessage` 建议使用`none`；开启消息分割后 @ 可能被拆成单独一条消息。
+- `splitMessage` 支持 `none` / `paragraph` / `punctuation`；分段时每段单独发送并在段内解析 @，
+  `maxPerMessage` 按每条消息计数。
 - 合并转发（`isForwardMsg`）：插件启动 5 秒后会检测该配置，若已开启则**自动暂停 @ 解析**（控制台 notifier 显示警告），避免转发节点里的 at 导致整条消息发送失败；关闭合并转发并重载插件即可恢复。
 
 ## 开发
@@ -82,7 +85,7 @@ fixedMentions:
 # 构建（tsc 产 d.ts + esbuild 产 lib/index.js）
 yarn workspace koishi-plugin-chatluna-mention build
 
-# 测试（37 条）
+# 测试（50 条）
 yarn workspace koishi-plugin-chatluna-mention test
 ```
 
@@ -93,6 +96,16 @@ yarn workspace koishi-plugin-chatluna-mention test
 MIT
 
 ## 更新日志
+
+### 1.2.0
+
+- **支持 ChatLuna 的消息分段**：`text-at` 渲染器此前完全忽略 `options.split`，开启
+  `splitMessage=paragraph/punctuation` 后仍整段发送。现在按内置 `TextRenderer` 的约定，
+  把每段包成 `h('message', ...)` 后交给 adapter；`paragraph` 按空行切、`punctuation` 按句读切，
+  markdown 结构与 `@昵称` 解析都保留。
+- **@ 预算按消息计数**：分段后每个 `message` 分组独立计算 `maxPerMessage`，符合“单条最多几个 @”的语义；
+  `split: none` 保持原有扁平行为。
+- **测试**：新增 `paragraph` / `punctuation` / `none` 三条分段用例，测试总数 50 条。
 
 ### 1.1.0
 
