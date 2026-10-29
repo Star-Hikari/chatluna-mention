@@ -60,8 +60,12 @@ function sortEntries(index: NameIndex) {
  */
 export class MentionResolver {
   private cache = new Map<string, { at: number; index: NameIndex }>()
+  /** @全体成员 权限缓存：key 同成员名单，value 为 can_at_all */
+  private atAllCache = new Map<string, { at: number; can: boolean }>()
   /** 失败日志节流：同一个群在缓存周期内只 warn 一次 */
   private warned = new Set<string>()
+  /** 合并转发模式下暂停解析（由 index 在启动 5 秒后按 isForwardMsg 设置） */
+  private skipAt = false
   private logger: Logger
 
   constructor(
@@ -72,24 +76,37 @@ export class MentionResolver {
     this.logger = logger ?? ctx.logger('chatluna-mention')
   }
 
+  /** 暂停/恢复 @ 解析。暂停时回复里的 @ 一律按普通文本发送，也不会查询成员名单。 */
+  setSkipAt(value: boolean) {
+    this.skipAt = value
+  }
+
   /** 成员变动后失效缓存；不传 guildId 则全清 */
   invalidate(guildId?: string) {
     if (!guildId) {
       this.cache.clear()
+      this.atAllCache.clear()
       return
     }
     const suffix = `:${guildId}`
     for (const key of [...this.cache.keys()]) {
       if (key.endsWith(suffix)) this.cache.delete(key)
     }
+    for (const key of [...this.atAllCache.keys()]) {
+      if (key.endsWith(suffix)) this.atAllCache.delete(key)
+    }
   }
 
   /** 深度遍历元素树，只改写 text 节点；budget 跨 text 段共享，保证“一条消息 N 个 @” */
   async rewrite(root: h[], session?: Session, budget: MentionBudget = { count: 0 }): Promise<h[]> {
+    // 合并转发模式：完全不碰 @（也不查名单），只保留 markdown 渲染结果
+    if (this.skipAt) return this.unwrapFirstParagraph(root)
+
     // 拿不到名单（私聊 / 接口失败）时不要提前 return：显式 <at id> 仍应生效，
     // 只是名字匹配自然匹配不到；同时保证首个 <p> 解包逻辑对所有路径一致。
     const index = await this.indexOf(session)
-    const state = { budget, index }
+    const allowAll = await this.resolveAtAll(root, session)
+    const state = { budget, index, allowAll }
 
     const walk = (elements: h[]): h[] => {
       const out: h[] = []
@@ -112,7 +129,12 @@ export class MentionResolver {
     }
 
     const result = walk(root)
-    // 与内置 TextRenderer 一致：首个 <p> 解包，否则 onebot 侧会多出空行
+    return this.unwrapFirstParagraph(result)
+  }
+
+  /** 与内置 TextRenderer 一致：首个 <p> 解包，否则 onebot 侧会多出空行 */
+  private unwrapFirstParagraph(elements: h[]): h[] {
+    const result = elements.slice()
     if (result[0]?.type === 'p') {
       const first = result.shift()!
       const content = first.attrs.content
@@ -162,6 +184,80 @@ export class MentionResolver {
         this.logger.debug(`获取群成员名单再次失败：${key}`)
       }
       return fixed
+    }
+  }
+
+  /**
+   * 本次回复是否真的需要 @全体成员（避免为无关回复白查一次权限）。
+   * 只扫描可解析的文本节点；代码块里出现的不算。
+   */
+  private wantsAtAll(elements: h[]): boolean {
+    for (const el of elements) {
+      if (OPAQUE.has(el.type)) continue
+      if (el.type === 'text') {
+        const content = String(el.attrs.content ?? '')
+        if (content.includes('@全体成员')) return true
+        if (/<at[^>]*type\s*=\s*["']all["']/i.test(content)) return true
+        continue
+      }
+      if (el.children?.length && this.wantsAtAll(el.children)) return true
+    }
+    return false
+  }
+
+  /**
+   * 是否允许本次 @全体成员。
+   *
+   * 背景：NapCat 在无权限时会让整条 send_group_msg 失败（retcode 1200），
+   * 而 koishi 的 Session.send 会把错误吞掉 → 整条回复静默丢失。
+   * 所以这里先用 get_group_at_all_remain 查 can_at_all，拿不到明确的 false 才放行。
+   */
+  private async resolveAtAll(elements: h[], session?: Session): Promise<boolean> {
+    if (!this.config.allowAll) return false
+    if (session?.isDirect) return false
+    if (!this.wantsAtAll(elements)) return false
+    if (!this.config.checkAtAllPermission) return true
+
+    const bot = session?.bot as any
+    const guildId = this.guildIdOf(session)
+    const probe = bot?.internal?.getGroupAtAllRemain
+    if (!guildId || typeof probe !== 'function') {
+      // 老版本 NapCat 没有该接口：保持“配置即放行”的旧行为
+      return true
+    }
+
+    const platform = bot.platform ?? session?.platform ?? 'unknown'
+    const selfId = bot.selfId ?? session?.selfId ?? 'unknown'
+    const key = `${platform}:${selfId}:${guildId}:at-all`
+    const hit = this.atAllCache.get(key)
+    const now = Date.now()
+    if (hit && now - hit.at < this.config.memberCacheTtl * 1000) return hit.can
+
+    try {
+      const data = await probe.call(bot.internal, guildId)
+      const flag = data?.can_at_all
+      // 只有明确的 false 才拦截；字段缺失（老版本/异常返回）按允许处理
+      const can = flag !== false
+      this.atAllCache.set(key, { at: now, can })
+      if (flag === true) {
+        this.logger.debug(
+          `@全体成员可用（群剩余 ${data?.remain_at_all_count_for_group ?? '?'} / 账号剩余 ${data?.remain_at_all_count_for_uin ?? '?'}）：${key}`,
+        )
+      } else if (flag === false) {
+        this.logger.debug(`@全体成员无权限，本次降级为普通文本：${key}`)
+      } else {
+        this.logger.debug(`@全体成员权限未返回 can_at_all，本次按允许处理：${key}`)
+      }
+      return can
+    } catch (e) {
+      // 探测失败 ≠ 无权限：按配置放行，避免误伤；只记录一次
+      if (!this.warned.has(key)) {
+        this.warned.add(key)
+        this.logger.warn(`查询 @全体成员 权限失败，本次按允许处理：${key}`, e)
+      } else {
+        this.logger.debug(`查询 @全体成员 权限再次失败：${key}`)
+      }
+      return true
     }
   }
 
@@ -224,7 +320,7 @@ export class MentionResolver {
 
   private convertText(
     text: string,
-    state: { budget: MentionBudget; index: NameIndex },
+    state: { budget: MentionBudget; index: NameIndex; allowAll: boolean },
     session?: Session,
   ): h[] {
     const out: h[] = []
@@ -263,7 +359,7 @@ export class MentionResolver {
 
       // ② @ 开头的几种形态
       if (text[i] === '@' && state.budget.count < this.config.maxPerMessage) {
-        if (this.config.allowAll && text.startsWith('@全体成员', i)) {
+        if (state.allowAll && text.startsWith('@全体成员', i)) {
           push(h('at', { type: 'all' }))
           i += 5
           continue
@@ -314,7 +410,7 @@ export class MentionResolver {
    */
   private parseTag(
     inner: string,
-    state: { budget: MentionBudget; index: NameIndex },
+    state: { budget: MentionBudget; index: NameIndex; allowAll: boolean },
     session?: Session,
   ): { element: h | null; text?: string } {
     const attrs: Record<string, string> = {}
@@ -323,7 +419,7 @@ export class MentionResolver {
     while ((matched = ATTR.exec(inner))) attrs[matched[1]] = matched[2]
 
     if (attrs.type === 'all') {
-      return { element: this.config.allowAll ? h('at', { type: 'all' }) : null }
+      return { element: state.allowAll ? h('at', { type: 'all' }) : null }
     }
 
     if (attrs.id) {

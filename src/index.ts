@@ -1,4 +1,4 @@
-import { Context } from 'koishi'
+import { Context, h } from 'koishi'
 import 'koishi-plugin-chatluna'
 import { Config } from './config'
 import { MentionRenderer, RENDER_TYPE } from './renderer'
@@ -6,7 +6,7 @@ import { MentionResolver } from './resolver'
 import { serializeElements } from './serialize'
 
 export const name = 'chatluna-mention'
-export const inject = { required: ['chatluna'] }
+export const inject = { required: ['chatluna'], optional: ['notifier'] }
 
 export { Config }
 export { RENDER_TYPE, MentionRenderer } from './renderer'
@@ -46,6 +46,8 @@ export const usage = `
 
 <p>如果模型写了 <code>@某人</code> 却没变蓝：先用预览命令确认名字能否命中——群名片改过、重名、名字里带空格都可能影响；实在不行用下方 <code>fixedMentions</code> 固定映射兜底。</p>
 
+<p>如果 chatluna 开启了<strong>合并转发</strong>，插件会在启动 5 秒后检测到并自动暂停 @ 解析（控制台会显示警告），避免转发节点里的 @ 导致整条消息发送失败。</p>
+
 <h3>关闭插件顺序（重要）</h3>
 
 <div class="warn">先把 chatluna 的 <code>outputMode</code> 改回 <code>text</code>，<strong>再</strong>停用本插件。反过来会让 ChatLuna 找不到 <code>text-at</code> 渲染器，之后每轮回复都会报 <code>RENDER_ERROR</code>。</div>
@@ -55,7 +57,7 @@ export const usage = `
 <ul>
 <li><strong>基础设置</strong>：单条最多几个 @、是否 @ 自己。</li>
 <li><strong>名单与匹配</strong>：成员缓存、重名策略、称谓后缀、固定映射。</li>
-<li><strong>高级</strong>：@全体、纯数字 ID、显式标签校验——默认值即可，非必要不要改。</li>
+<li><strong>高级</strong>：@全体（默认开，发送前校验权限）、纯数字 ID、显式标签校验——默认值即可，非必要不要改。</li>
 </ul>
 
 </div>
@@ -68,6 +70,48 @@ export function apply(ctx: Context, config: Config) {
 
   // 注册自定义渲染器；ctx.effect 保证 HMR / 停用 / dispose 时自动摘掉
   ctx.effect(() => ctx.chatluna.renderer.addRenderer(RENDER_TYPE, () => renderer))
+
+  // ── 合并转发保护 ──
+  // chatluna 的 isForwardMsg 会把回复塞进转发节点；节点里的 at 段在部分 NapCat 版本上
+  // 会导致整条 send_group_forward_msg 失败（同样被 Session.send 吞掉 → 回复静默丢失）。
+  // 因此启动 5 秒后读一次配置：开启合并转发就暂停 @ 解析，并在控制台 notifier 里给出警告。
+  let notifier: any = null
+  let forwardBlocked = false
+
+  const showForwardWarning = () => {
+    if (!forwardBlocked || notifier == null) return
+    notifier.update({
+      type: 'warning',
+      content: [
+        h('p', '检测到 chatluna 已开启「合并转发（isForwardMsg）」。'),
+        h(
+          'p',
+          '为避免 @ 被写进转发节点、导致整条消息发送失败，本插件已暂停解析 @ 文本；回复里的 @昵称 会按普通文字发出。',
+        ),
+        h('p', '需要恢复 @：先在 chatluna 关闭合并转发，再重载本插件。'),
+      ],
+    })
+  }
+
+  // notifier 是可选服务：没装/未启用时静默跳过
+  ctx.inject(['notifier'], (ctx) => {
+    notifier = (ctx as any).notifier.create()
+    showForwardWarning()
+  })
+
+  ctx.setTimeout(() => {
+    const isForwardMsg = (ctx.chatluna as any)?.currentConfig?.isForwardMsg === true
+    if (!isForwardMsg) {
+      logger.debug('未开启合并转发，@ 解析保持启用')
+      return
+    }
+    forwardBlocked = true
+    resolver.setSkipAt(true)
+    logger.warn(
+      '检测到 chatluna 已开启合并转发（isForwardMsg）：已暂停 @ 解析，避免转发节点里的 @ 导致整条消息发送失败。',
+    )
+    showForwardWarning()
+  }, 5000)
 
   // 成员变动 → 失效该群缓存（onebot 的 group_increase/decrease 会映射成这两个事件）
   const onMemberChange = (session: any) => {

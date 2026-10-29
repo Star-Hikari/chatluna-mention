@@ -46,7 +46,8 @@
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `maxPerMessage` | `3` | 单条最多几个 @，超出的保持纯文本 |
-| `allowAll` | `false` | 允许 `@全体成员`（还需 bot 是管理员） |
+| `allowAll` | `true` | 允许 `@全体成员`（发送前校验权限，无权限自动降级） |
+| `checkAtAllPermission` | `true` | 发送前用 `get_group_at_all_remain` 校验 `can_at_all` |
 | `allowRawId` | `false` | 允许 `@123456789` 直接当 QQ 号 |
 | `skipSelf` | `true` | 不 @ bot 自己 |
 | `memberCacheTtl` | `300` | 成员名单缓存（秒），成员变动自动失效 |
@@ -72,8 +73,8 @@ fixedMentions:
 
 - 只支持 onebot；官方 QQ 机器人与其它适配器不在支持范围。
 - 流式固定为 buffer（整条生成完再发），避免 `@小明` 被切成两半。
-- `splitMessage` 需保持 `none`；开启后 @ 可能被拆成单独一条消息。
-- 合并转发（`isForwardMsg`）里的 at 未验证。
+- `splitMessage` 建议使用`none`；开启消息分割后 @ 可能被拆成单独一条消息。
+- 合并转发（`isForwardMsg`）：插件启动 5 秒后会检测该配置，若已开启则**自动暂停 @ 解析**（控制台 notifier 显示警告），避免转发节点里的 at 导致整条消息发送失败；关闭合并转发并重载插件即可恢复。
 
 ## 开发
 
@@ -90,3 +91,24 @@ yarn workspace koishi-plugin-chatluna-mention test
 ## License
 
 MIT
+
+## 更新日志
+
+### 1.1.0
+
+- **修复：无管理员权限时 @全体成员 会导致整条回复丢失。**
+  开启 `allowAll` 但机器人不是群管理员时，NapCat 会让这次 `send_group_msg` 整体失败
+  （WS 路径返回 `retcode: 1200`），而 koishi 的 `Session.send` 会吞掉异常——表现为群里
+  **什么都收不到**、只在日志里留一条 `Error with request send_group_msg ... retcode: 1200` 的 warn。
+  现在发送前会调用 `get_group_at_all_remain` 校验 `can_at_all`：无权限时把 `@全体成员`
+  降级为普通文本，消息照常发出；探测接口不存在或查询失败时按“允许”处理，避免误伤。
+- **变更**：`allowAll` 默认值由 `false` 改为 `true`（由上述权限校验兜底）。
+- **新增配置**：`checkAtAllPermission`（默认 `true`），关闭后不再探测权限（无权限时可能整条消息发送失败，一般不建议关）。
+- **合并转发保护**：插件初始化 5 秒后读取 chatluna 的 `isForwardMsg`；若已开启，则暂停所有 @ 解析
+  （回复里的 `@昵称` 按普通文字发出，也不查询成员名单），并在控制台 notifier 显示一条 warning，
+  避免转发节点里的 `at` 段导致 `send_group_forward_msg` 失败、整条回复静默丢失。
+- **性能**：权限查询按 `memberCacheTtl` 缓存，且只在回复里真的出现 `@全体成员` 时才查询，平时零额外请求。
+
+### 1.0.0
+
+- 初始版本

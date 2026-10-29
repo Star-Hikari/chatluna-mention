@@ -14,6 +14,8 @@ export interface Config {
   maxPerMessage: number
   /** 允许 @全体成员（还需要 bot 在群里是管理员） */
   allowAll: boolean
+  /** 发送 @全体成员 前校验 can_at_all，无权限则降级为文本 */
+  checkAtAllPermission: boolean
   /** 允许把 @123456789 直接当 QQ 号 @ */
   allowRawId: boolean
   /** 不 @ bot 自己 */
@@ -68,15 +70,22 @@ export const Config = Schema.intersect([
 
   Schema.object({
     allowAll: Schema.boolean()
-      .default(false)
-      .description('允许 @全体成员。需要机器人是群管理员，否则 QQ 侧会报错；默认关闭。'),
+      .default(true)
+      .description(
+        '允许 @全体成员',
+      ),
+    checkAtAllPermission: Schema.boolean()
+      .default(true)
+      .description(
+        '发送 @全体成员 前调用 get_group_at_all_remain 校验能否发送（无权限时可能导致整条消息发送失败，一般不建议关）。',
+      ),
     allowRawId: Schema.boolean()
       .default(false)
-      .description('允许把 @123456789 直接当作 QQ 号。默认关闭：开启后模型写出的数字可能 @ 到任意人。'),
+      .description('允许把 @123456789 直接当作 QQ 号。开启后模型写出的数字可能 @ 到任意人。'),
     validateExplicitId: Schema.boolean()
       .default(true)
       .description(
-        '校验回复里的 <at id="…"/> 是否为本群成员；不是则整段丢弃，绝不回显 QQ 号。只有在你确实需要跨群 @ 时才关闭。',
+        '校验 @ 对象是否为本群成员；不是则整段丢弃，绝不回显 QQ 号。只有在你确实需要跨群 @ 时才关闭。',
       ),
-  }).description('高级（默认值即可，非必要不要改）'),
+  }).description('更多设置'),
 ]) as unknown as Schema<Config>
